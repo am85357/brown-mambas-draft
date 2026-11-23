@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function hasRole() { return signedIn() && exists(/databases/$(database)/documents/roles/$(request.auth.uid)); }
+    function role() { return get(/databases/$(database)/documents/roles/$(request.auth.uid)).data; }
+    function admin() { return hasRole() && role().get('admin', false) == true; }
+    function captain() { return hasRole() && role().get('team', 0) is int && role().get('team', 0) >= 1 && role().get('team', 0) <= 6; }
+    function validCaptainPick() {
+      let old = resource.data;
+      let next = request.resource.data;
+      let n = old.picks.size();
+      let pick = next.picks[n];
+      let id = next.pickedIds[n];
+      return captain()
+        && old.started == true
+        && n < 42
+        && next.keys().hasAll(['names','order','picks','pickedIds','started','revision'])
+        && next.diff(old).affectedKeys().hasOnly(['picks','pickedIds','revision'])
+        && next.revision == old.revision + 1
+        && next.picks.size() == n + 1
+        && next.pickedIds.size() == n + 1
+        && next.picks.removeAll([pick]) == old.picks
+        && next.pickedIds.removeAll([id]) == old.pickedIds
+        && !(id in old.pickedIds)
+        && id is string && id.size() > 0 && id.size() <= 250
+        && pick.keys().hasOnly(['id','name','category','team'])
+        && pick.keys().hasAll(['id','name','category','team'])
+        && pick.id == id
+        && pick.name is string && pick.name.size() > 0 && pick.name.size() <= 250
+        && pick.category in ['Scorers','Contributors','Role Players','Uncategorized']
+        && pick.team == role().team
+        && pick.team == old.order[int(n / 6)][n % 6];
+    }
+    match /roles/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || admin());
+      allow write: if false; // Create roles in Firebase Console only.
+    }
+    match /drafts/main {
+      allow read: if hasRole();
+      allow create: if admin();
+      allow update: if admin() || validCaptainPick();
+      allow delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
